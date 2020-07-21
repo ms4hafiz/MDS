@@ -1,0 +1,627 @@
+-- ================= Data Ingestion and Processing - Case Study ================================================
+-- ================= Submitted by: Hafizullah Mahmudi ans Srinivas Madabhushi ==================================
+-- ================= PGDDS, Upgrad, Batch September 2019 =======================================================
+
+-- IMPORTANT: BEFORE CREATING ANY TABLE, MAKE SURE YOU RUN THIS COMMAND 
+ADD JAR /opt/cloudera/parcels/CDH/lib/hive/lib/hive-hcatalog-core-1.1.0-cdh5.11.2.jar;
+
+-- SET CATALOG_SYNC_MODE=0 TO ALLOW DROPPING EXTERNAL TABLE
+SET SYSHADOOP.CATALOG_SYNC_MODE=0;
+
+------------------------------------------------------------------------------------------------------------------
+
+-- CREATING TABLE (EXTERNAL TABLE) and IMPORT FROM FILE
+drop table 01_nyc_taxi_data_final; 
+create external table if not exists 01_nyc_taxi_data_final ( 
+        vendorid int ,
+        tpep_pickup_datetime string,
+        tpep_dropoff_datetime string,
+        passenger_count int,
+        trip_distance double,
+        ratecodeid int,
+        store_and_fwd_flag string ,
+        pulocationid int,
+        dolocationid int,
+        payment_type int,
+        fare_amount double,
+        extra double,
+        mta_tax double,     
+        tip_amount double,
+        tolls_amount double,
+        improvement_surcharge double,
+        total_amount double ) ROW FORMAT DELIMITED FIELDS TERMINATED BY ','
+STORED AS TEXTFILE
+location '/common_folder/nyc_taxi_data/'
+tblproperties ("skip.header.line.count"="1");
+
+-----------------------------------------------------------------------------------------------------------------
+-- CHECK TOTAL RECORDS 
+select count(*) from 01_nyc_taxi_data_final;
+-- total records are 1174569
+
+
+-- ================================================= DATA QUALITY CHECKS ====================================================
+--  both vendors have data quality issues but vendor 2 data quality input is worse than vendor 1. 
+
+-- 1. NUMBER OF RECORDS PER VENDOR 
+select vendorid,count(*) as total_count from 01_nyc_taxi_data_final
+group by vendorid 
+order by vendorid;
+
+-- Total per vendor is as following:
+--      VendorID        total_count
+--      1               527386
+--      2               647183
+
+--------------------------------------------------------------------------------------------------
+-- 2. Check whether the data is consistent, and if not, identify the data quality issues BASED ON 
+select year(tpep_pickup_datetime) as yr,month(tpep_pickup_datetime) as mnth, 
+count(tpep_pickup_datetime) as Total_counts 
+from 01_nyc_taxi_data_final
+group by year(tpep_pickup_datetime),month(tpep_pickup_datetime);
+
+--        yr	mnth	total_counts
+--        2003	1	    1
+--        2008	12	    2
+--        2009	1	    1
+--        2017	11	    580300
+--        2017	10	    6
+--        2017	12	    594255
+--        2018	1	    4
+
+-- CONCLUSION 
+-- data for year 2003 and 2008 is a data quality issue that should be removed. It makes 4 records
+-- Data for october 2017 is also a data quality issue that should be remove. total 6 records
+-- Data for January 2018 is also a data quality issue because the pickpup date should not be only within 2017 not 2018. total 4 records
+-- Records for 2017 month 11 and 12 should be kept
+
+----------------------------------------------------------------------------------------------------------
+-- 3. Check whether the data is consistent, and if not, identify the data quality issues BASED ON tpep_pickup_datetime
+select year(tpep_dropoff_datetime) as yr,month(tpep_dropoff_datetime) as mnth, 
+count(tpep_dropoff_datetime) as Total_counts 
+from 01_nyc_taxi_data_final
+group by year(tpep_dropoff_datetime),month(tpep_dropoff_datetime)
+order by yr,mnth;
+
+--  yr	mnth	total_counts
+--  2003	1	    1
+--  2008	12	    1
+--  2009	1	    2
+--  2017	10	    2
+--  2017	11	    580053
+--  2017	12	    594399
+--  2018	1	    110
+--  2019	4	    1
+
+-- CONCLUSION 
+-- data for year 2003, 2008 and 2009 is a data quality issue that should be removed. It makes 4 records
+-- Data for october 2017 is also a data quality issue that should be remove. total 2 records
+-- Data for 2019 is also a data quality issue because and should be deleted.
+-- Records for 2017 month 11 and 12 should be kept and same for Jan 2018 because it is possible that the trip ends at January FIRST
+
+----------------------------------------------------------------------------------------------------------
+-- 4. Records by vendor
+select vendorid, year(tpep_pickup_datetime) as yr,month(tpep_pickup_datetime) as mnth, 
+count(tpep_pickup_datetime) as Total_counts 
+from 01_nyc_taxi_data_final
+group by vendorid, year(tpep_pickup_datetime),month(tpep_pickup_datetime)
+order by vendorid,yr,mnth;
+
+--      vendorid	yr	    mnth	total_counts
+--      1	        2017	11	    261282
+--      1	        2017	12	    266104
+--      2	        2003	1	    1
+--      2	        2008	12	    2
+--      2	        2009	1	    1
+--      2	        2017	10	    6
+--      2	        2017	11	    319018
+--      2	        2017	12	    328151
+--      2	        2018	1	    4
+
+-- AS SEEN ABOVE, THE VENDOR 2 HAS DATA QUALITY ISSUES 
+
+----------------------------------------------------------------------------------------------------------
+-- 5. CHECKING COUNTS PER PASSENGER COUNT 
+select vendorid, passenger_count,count(*) as Total_counts 
+from 01_nyc_taxi_data_final
+group by vendorid, passenger_count
+order by vendorid,passenger_count;
+
+--         vendorid	    passenger_count	total_counts
+--         1	        0	            6813
+--         1	        1	            415346
+--         1	        2	            74640
+--         1	        3	            18710
+--         1	        4	            11310
+--         1	        5	            361
+--         1	        6	            205
+--         1	        7	            1
+--         2	        0	            11
+--         2	        1	            412153
+--         2	        2	            102232
+--         2	        3	            31983
+--         2	        4	            13641
+--         2	        5	            54207
+--         2	        6	            32941
+--         2	        7	            11
+--         2	        8	            3
+--         2	        9	            1
+
+-- Both vendor 1 and vendor 2 had a number of trips with 0 passengers. For this is acceptable because their can situations where the passenger 
+-- cancels his trip or is not happy to have the trip
+-- It could be also possible that it is used for delivering small or light things 
+-- There a about 4 trips with 8 and 9 passengers which is acceptable for me. It could be possible because in some situations the babies might have been also counted
+
+------------------------------------------------------------------------------------------------------------
+-- 6. CHECK IF THE DISTANCE IS NEGATIVE(-) 
+select vendorid, COUNT(*)
+from 01_nyc_taxi_data_final 
+where trip_distance<0
+GROUP BY vendorid
+order by vendorid;
+
+--      vendorid	_c1
+--      1	        4217
+--      2	        3185
+
+-- there are no negative but there a number of trips for each vendor that is not of a concern of data quality issue for me for the reasons ABOVE
+
+-- but following shows nubmer of trips with 0 distrance per vendor
+select vendorid, COUNT(*)
+from 01_nyc_taxi_data_final 
+where trip_distance=0
+GROUP BY vendorid
+order by vendorid;
+
+--      vendorid	_c1
+--      1	        4217
+--      2	        3185
+
+------------------------------------------------------------------------------------------------------------
+-- 7. CHECK IF THE RATECODE IS WITHIN THE RANGE OF GIVEN CODE BASED ON THE DATA DICTIONARY
+select vendorid, ratecodeid, COUNT(ratecodeid) as Total_counts
+from 01_nyc_taxi_data_final 
+GROUP BY vendorid,ratecodeid
+order by vendorid, ratecodeid;
+
+--      vendorid	ratecodeid	total_counts
+--      1	        1	        513991
+--      1	        2	        10544
+--      1	        3	        1186
+--      1	        4	        230
+--      1	        5	        1425
+--      1	        6	        2
+--      1	        99	        8
+--      2	        1	        628287
+--      2	        2	        14794
+--      2	        3	        1376
+--      2	        4	        356
+--      2	        5	        2368
+--      2	        6	        1
+--      2	        99	        1
+
+
+-- There is rate category (99) which is not in the ratecode list which could possibly mean unknown so we wil remove it. 
+-- As seen, both vendor has the issue of reporting under 99 ratecode but vendor 1 is worse than vendor 2.
+
+---------------------------------------------------------------------------------------------------------------
+
+-- 8. CHECK status of  store_and_fwd_flag
+select store_and_fwd_flag, COUNT(store_and_fwd_flag) as Total_counts
+from 01_nyc_taxi_data_final 
+GROUP BY store_and_fwd_flag
+order by store_and_fwd_flag; 
+
+--      store_and_fwd_flag	total_counts
+--      N	                1170618
+--      Y	                3951
+
+-- The result for this query looks fine to me and cannot see any data quality issue
+
+-------------------------------------------------------------------------------------------------------------
+-- 9. CHECK status of  payment_type
+select payment_type, COUNT(payment_type) as Total_counts
+from 01_nyc_taxi_data_final 
+GROUP BY payment_type
+order by payment_type; 
+
+--      payment_type	total_counts
+--      1	            790256
+--      2	            376374
+--      3	            6274
+--      4	            1665
+
+-- The payment_type looks OK to me. No data quality issues found
+
+---------------------------------------------------------------------------------------------------------------------------------
+-- 10. CHECK fare_amount is less than 0
+        select vendorid, count(fare_amount) as Total_counts from 01_nyc_taxi_data_final
+        where fare_amount<=0
+        group by vendorid
+        order by vendorid;
+
+--      vendorid	total_counts
+--      1	        231
+--      2	        639
+
+--      There are several records with 0 or negative value. The vendor 2 has more than the vendor 1
+
+--      looking from another angle there is seem data quality issue or 
+        select vendorid, count(fare_amount) as Total_counts,sum(if(tip_amount>0,1,0)) as Tip_counts,
+        sum(if(extra>0,1,0)) as Extra_counts from 01_nyc_taxi_data_final
+        where fare_amount<=0
+        group by vendorid
+        order by vendorid;
+
+--      vendorid	total_counts	tip_counts	extra_counts
+--      1	        231	             14	         2
+--      2	        639	             0	         0
+
+-- There seems data quality issue with vendor 1, had 231 total tips with 0 or negative fare about have received tips and also had extra charge
+
+-----------------------------------------------------------------------------------------------------------------------------------
+-- 11. CHECK QUALITY OF MTA_TAX  
+select mta_tax, count(mta_tax) as Total_counts
+from 01_nyc_taxi_data_final
+group by mta_tax
+order by mta_tax;
+
+--        vendorid	mta_tax	        total_counts
+--        1	        0	        2711
+--        1	        0.5	        524674
+--        1	        11.4	        1
+--        2	        -0.5	        544
+--        2	        0	        2486
+--        2	        0.5	        644150
+--        2	        3	        3
+
+-- Both vendors has reported out of range of accepted values 0 or 0.5 but vendor is worse than vendor 1 in incorrect or error reporting.
+
+----------------------------------------------------------------------------------------------------------------------------------
+-- 12. CHECK QUALITY OF EXTRA      
+select vendorid, extra, count(extra) as Total_counts
+from 01_nyc_taxi_data_final
+group by vendorid, extra
+order by vendorid, extra;
+
+--      vendorid	extra	total_counts
+--      1	        -10.6	1
+--      1	        0	284273
+--      1	        0.5	161608
+--      1	        1	79682
+--      1	        1.5	2
+--      1	        2	1
+--      1	        4.5	1819
+--      2	        -4.5	5
+--      2	        -1	87
+--      2	        -0.5	193
+--      2	        0	347599
+--      2	        0.3	36
+--      2	        0.5	201847
+--      2	        0.8	15
+--      2	        1	94704
+--      2	        1.3	13
+--      2	        4.5	2683
+--      2	        4.8	1
+
+
+-- As seen there are a number of records which are out of range of valid (0,0.5,1) values for both vendor 1 and vendor 2
+-- The vendor 2 data quality issues is worse than the vendor 1
+-- Vendor 1 has reported invlid data under extra (-10.6,1.5,2,4.5)
+-- Vendor 2 has reported invlid data entries under extra (0.3,0.5,0.8, 1.3,4.5, 4.8)
+
+----------------------------------------------------------------------------------------------------------------------------------
+-- 13. CHECK tip amount is not negative
+select vendorid, tip_amount, count(*) as Total_counts  
+from 01_nyc_taxi_data_final
+where tip_amount<0
+group by vendorid,tip_amount
+
+--      vendorid	tip_amount	total_counts
+--      2	        -1.16	        1
+--      2	        -0.86	        1
+--      2	        -0.82	        1
+--      2	        -0.66	        1
+
+--  There are a few records under vendor 2 with negative tips which is obviously a data quality issue.
+
+----------------------------------------------------------------------------------------------------------------------------------
+-- 14. CHECK tolls_amount is not negative
+select vendorid, tolls_amount, count(*) as Total_counts  
+from 01_nyc_taxi_data_final  
+where tolls_amount<0
+group by vendorid,tolls_amount
+
+--      vendorid	tolls_amount	total_counts
+--      2	        -5.76	        3
+
+-- There 3 trips under vendor 2 with negative value which looks a data quality issue. The tolls amount will never be negative but is possible to be 0
+
+
+----------------------------------------------------------------------------------------------------------------------------------
+
+-- 15. CHECK improvement_surcharge is not negative and invlid values
+select vendorid, improvement_surcharge, count(*) as Total_counts  
+from 01_nyc_taxi_data_final   
+group by vendorid,improvement_surcharge
+order by vendorid,improvement_surcharge;
+
+--      vendorid	improvement_surcharge	total_counts
+--      1	        0	                61
+--      1	        0.3	                527325
+--      2	        -0.3	         558
+--      2	        0	                226
+--      2	        0.3	                646395
+--      2	        1	                4
+
+-- There 558 records with invalid value of (-0.3) improvement_surcharge under vendor 1
+-- There are 4 records with invalid values of (1)  improvement_surcharge under vendor 2
+
+
+-- 16. CHECK if any pickupdate is greater than dropdate. This also means that the distance duration is not negative
+        select vendorId,sum(if(total_time<0,1,0)) as total_with_negative,sum(if(total_time=0,1,0)) as total_with_zero 
+        from 
+        (select vendorid, tpep_pickup_datetime,tpep_dropoff_datetime,UNIX_TIMESTAMP(tpep_pickup_datetime) as Pick_time,
+        UNIX_TIMESTAMP(tpep_dropoff_datetime) as Drop_time,
+        (UNIX_TIMESTAMP(tpep_dropoff_datetime)-UNIX_TIMESTAMP(tpep_pickup_datetime)) as Total_time from 01_nyc_taxi_data_final) t
+        group by vendorid
+        order by vendorid;
+
+--      vendorid	total_with_negative	total_with_zero
+--      1	        73	                3419
+--      2	        0	                3063
+
+-- There are about 73 trips under vendor 1 with pickup time greater than dropoff time which is obviously a data quality issue. 
+-- There are trips with 0 duration both under vendor 1 and vendor 2 
+ 
+
+-- ============ CONCLUSION FOR DATA QUALITY ===========================================================================================
+--  both vendors have data quality issues but vendor 2 data quality input is worse than vendor 1. 
+
+
+-- =====================================================================================================================================
+
+
+-- ================================================= ORC partitioned table for analysis ================================================
+
+-- SETTTING OPTION TO SUPPORT partition
+SET hive.exec.max.dynamic.partitions=100000;
+SET hive.exec.max.dynamic.partitions.pernode=100000;
+
+
+-- First drop the table 
+        drop table 01_nyc_taxi_data_final_partioned;
+-- Then create external table 
+        CREATE EXTERNAL TABLE IF NOT EXISTS 01_nyc_taxi_data_final_partioned
+        (vendorid INT,tpep_pickup_datetime TIMESTAMP, tpep_dropoff_datetime TIMESTAMP,Passenger_count INT,
+        Trip_distance DOUBLE,RateCodeID INT,Store_and_fwd_flag STRING,
+        PULocationID INT, DOLocationID INT,
+        Payment_type INT,Fare_amount DOUBLE,Extra DOUBLE, MTA_tax DOUBLE,
+        Tip_amount DOUBLE,Tolls_amount DOUBLE,Improvement_surcharge DOUBLE,
+        Total_amount DOUBLE) partitioned by (yr int, mnth int)
+        location '/user/hive/warehouse/0nyc_taxi_data_final_partioned';
+
+
+-- Then insert the data in the epartionied table 
+        insert overwrite table 01_nyc_taxi_data_final_partioned partition(yr, mnth)
+        select  vendorid, tpep_pickup_datetime, tpep_dropoff_datetime, passenger_count, trip_distance, ratecodeid, 
+        store_and_fwd_flag, pulocationid, dolocationid, payment_type, fare_amount, extra, mta_tax, tip_amount, 
+        tolls_amount,improvement_surcharge, total_amount,year(tpep_pickup_datetime) as yr, month(tpep_pickup_datetime) as mnth
+        from  01_nyc_taxi_data_final 
+        where (UNIX_TIMESTAMP(tpep_dropoff_datetime)-UNIX_TIMESTAMP(tpep_pickup_datetime))>=0 
+        and (year(tpep_pickup_datetime)*100+month(tpep_pickup_datetime)) in (201711,201712) 
+        and (year(tpep_dropoff_datetime)*100+month(tpep_dropoff_datetime)) in (201711,201712,201801) 
+        and ratecodeid <99
+        and fare_amount >0 
+        and mta_tax in(0,0.5)
+        and extra in(0,0.5,1,1.0)
+        and tip_amount >=0
+        and tolls_amount >=0
+        and improvement_surcharge in(0,0.3);
+
+-- Now create ORC table
+-- First drop the table if exist
+        drop table 01_nyc_taxi_data_final_orc;
+        CREATE EXTERNAL TABLE IF NOT EXISTS 01_nyc_taxi_data_final_orc
+        (vendorid INT,tpep_pickup_datetime TIMESTAMP, tpep_dropoff_datetime TIMESTAMP,Passenger_count INT,
+        Trip_distance DOUBLE,RateCodeID INT,Store_and_fwd_flag STRING,
+        PULocationID INT, DOLocationID INT,
+        Payment_type INT,Fare_amount DOUBLE,Extra DOUBLE, MTA_tax DOUBLE,
+        Tip_amount DOUBLE,Tolls_amount DOUBLE,Improvement_surcharge DOUBLE,
+        Total_amount DOUBLE) partitioned by (yr int, mnth int)
+        stored as orc location '/user/hive/warehouse/0nyc_taxi_data_final_orc'
+        tblproperties ("orc.compress"="SNAPPY");
+
+-- Then, write data from partition table into ORC table 
+        insert overwrite table 01_nyc_taxi_data_final_orc partition(yr , mnth) 
+        select * from 01_nyc_taxi_data_final_partioned;
+
+        select count(*) from 01_nyc_taxi_data_final_orc;-- it should be 1169029 records
+-- =====================================================================================================================================
+
+-- ================================================= ANALYSIS PART I ===================================================================
+
+-- Question 1. Compare the overall average fare per trip for november and december
+        -- So this is an average without any filter. The data is for Nov and Dec 2017
+
+-- query
+        select avg(fare_amount) as fare_avg from 01_nyc_taxi_data_final_orc;
+
+-- result 
+        -- 12.858365660732149
+
+--------------------------------------------------------------------------------------------------------------------------------------
+-- Question 2. Explore the 'number of passengers per trip' 
+
+-- query 
+        select passenger_count,count(*) as Total_counts from 01_nyc_taxi_data_final_orc
+        group by passenger_count
+        order by passenger_count;
+
+-- result
+        --      passenger_count	total_counts
+        --      0	        6788
+        --      1	        823905
+        --      2	        175816
+        --      3	        50418
+        --      4	        24815
+        --      5	        54275
+        --      6	        32996
+        --      7	        12
+        --      8	        3
+        --      9	        1
+
+-- CONCLUSION
+        -- Most of the trips had either 1 or 2 passengers 
+        -- Trips with 1 passensenger is mot frequent
+        -- Trips with 9 passenger is less frequest 
+
+
+--------------------------------------------------------------------------------------------------------------------------------------
+
+-- Question 3. Which one is the most preferred mode of payment?
+
+-- query 
+        select payment_type,count(*) as Total_counts from 01_nyc_taxi_data_final_orc
+        group by payment_type
+        order by payment_type;
+
+-- result
+        --      payment_type	total_counts
+        --      1	        786992
+        --      2	        374812
+        --      3	        5724
+        --      4	        1501
+
+-- CONCLUSION
+        -- Payment mode 1 is the most preferred and 2 is the second  
+
+--------------------------------------------------------------------------------------------------------------------------------------
+
+-- Question 4. What is the average tip paid per trip?
+
+-- query 
+        select round(avg(tip_amount),2) as avg_tip, 
+        round(percentile_approx(tip_amount,0.25),2) as avg_25,
+        round(percentile_approx(tip_amount,0.50),2) as avg_50,
+        round(percentile_approx(tip_amount,0.61),2) as avg_61,
+        round(percentile_approx(tip_amount,0.75),2) as avg_75
+        from 01_nyc_taxi_data_final_orc;
+
+-- result
+        --    avg_tip	avg_25	avg_50	avg_75	avg_61
+        --    1.83	0	1.35	2.45	1.84
+
+
+-- CONCLUSION
+        -- The overall average tip is not representative of 25, 50 or 75 percentile but it is between 50 and 75th at 61st percentile.
+--------------------------------------------------------------------------------------------------------------------------------------
+
+-- Question 5. Explore the ‘Extra’ (charge) variable - what fraction of total trips have an extra charge is levied?
+
+-- query                  
+        select round(sum(if(extra>0,1,0))/count(*)*100,2) as Faction_with_extra from 01_nyc_taxi_data_final_orc;
+
+-- result
+       --  46%
+
+-- CONCLUSION
+        -- 46% of total trips had extra charges
+
+-- =====================================================================================================================================
+
+-- ================================================= ANALYSIS PART II ===================================================================
+
+-- Question 1. What is the correlation between the number of passengers on any given trip, and the tip paid per trip? Do multiple travellers
+-- tip more compared to solo travellers? 
+
+-- query 
+        select corr(passenger_count, tip_amount) as correlation
+        from 01_nyc_taxi_data_final_orc;
+
+-- result 
+        -- -0.0046172
+
+-- CONCLUSION
+        -- Correlation of -0.0046172, that means there is no strong correlation between number of passengers and tip paid per trip. It is more random chance.
+
+-------------------------------------------------------------------------------------------------------------------------------------
+-- Question 2. Segregate the data into five segments of ‘tip paid’: [0-5), [5-10), [10-15) , [15-20) and >=20.
+-- Calculate the percentage share of each bucket (i.e. the fraction of trips falling in each bucket).
+
+-- query 
+        select tip_amount_category,round(count(*) /cast(sum(count(*)) over() as float) *100,2) as prcnt_total
+        from(
+            select case
+                when tip_amount <5 then " 0-4"
+                when tip_amount>=5 and tip_amount<10 then " 5-9"
+                when tip_amount>=10 and tip_amount<15 then "10-14"
+                when tip_amount>=15 and tip_amount<20 then "15-19"
+                else "20+"
+            end as tip_amount_category
+            from 01_nyc_taxi_data_final_orc) t
+        group by tip_amount_category order by tip_amount_category;
+
+-- result 
+        --      tip_amount_category	prcnt_total
+        --      0-4	                92.33
+        --      5-9	                5.63
+        --      10-14	                1.74
+        --      15-19	                0.2
+        --      20+	                0.1
+
+-- CONCLUSION
+        -- Tip amount between 0 to 4 accounts 92.33% of all trips
+
+-------------------------------------------------------------------------------------------------------------------------------------
+-- Question 3. Which month has a greater average ‘speed’ 
+-- November or December? Note that the variable ‘speed’ will have to be derived from other metrics.
+
+-- query
+        select mnth, round(avg(trip_distance/((unix_timestamp(tpep_dropoff_datetime)-unix_timestamp(tpep_pickup_datetime))/3600)),2) as avg_speed
+        from 01_nyc_taxi_data_final_orc 
+        group by mnth;
+
+-- result
+        --      mnth	avg_speed
+        --      11	10.94 MPH
+        --      12	11.04 MPH
+
+-- CONCLUSION
+        --Average Speed for November and December is 10.94 & 11.04 respectively
+        --Average Speed of November - Average Speed of December: 0.1 MPH
+        --The Average Speed of taxis in December is greater than their average speed in November.
+        --Overall speed for November and December (10.94+11.04)/2=10.99
+
+-------------------------------------------------------------------------------------------------------------------------------------
+
+-- Question 4. Analyse the average speed of the most happening days of the year. 
+
+-- query 
+        select "December 25" as Mnth, round(avg(trip_distance/((unix_timestamp(tpep_dropoff_datetime)-unix_timestamp(tpep_pickup_datetime))/3600)),2) as avg_speed
+        from 01_nyc_taxi_data_final_orc 
+        where month(tpep_pickup_datetime)=12 and day(tpep_pickup_datetime)=25
+        group by mnth
+        Union all
+        select "December 31" as Mnth, round(avg(trip_distance/((unix_timestamp(tpep_dropoff_datetime)-unix_timestamp(tpep_pickup_datetime))/3600)),2) as avg_speed
+        from 01_nyc_taxi_data_final_orc 
+        where month(tpep_pickup_datetime)=12 and day(tpep_pickup_datetime)=31
+        group by mnth;
+
+-- result 
+        --      Day	        avg_speed
+        --      25-Dec	        15.23
+        --      31-Dec	        13.2
+
+-- CONCLUSION
+        --Overall Average Speed for November and December Combined: 10.99 MPH
+        --Average Speed on 25th December: 15.23 MPH
+        --Speed greater than Overall Avg: 4.24 MPH
+
+        --Average Speed on 31st December: 13.2 MPH
+        --Speed greater than Overall Avg: 2.21 MPH
+        --Percentage greater than Overall Avg: + 11.31%
+        --The average speed on both 25th and 31 December is higher than the overall average speed.
+        --The average speed for 25th December is greater than 31 December
+
+-- ================================================================ END ==================================================================
